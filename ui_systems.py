@@ -125,43 +125,63 @@ class Aurora:
 
 
 # ═══════════════════════════════════════════════════════════════
-class FloatDots:
+class PixelGrid:
     """
-    Dark, softly-blurred circles drifting slowly across the background.
-    Replaces the constellation/neural-network dots.
+    Smooth, wave-based pixelated shimmer effect.
+    A radial sine wave ripples outward from the center, causing grid
+    cells to glow in a single colour with smooth transitions.
     """
-    def __init__(self, W, H, n=28):
-        rng = random.Random(31)
-        self.W, self.H = W, H
-        self.nodes = [
-            {'x':  rng.uniform(0, W),
-             'y':  rng.uniform(0, H),
-             'vx': rng.uniform(-6, 6),
-             'vy': rng.uniform(-5, 5),
-             'r':  rng.uniform(10, 34),
-             'a':  rng.uniform(18, 42)}   # base alpha
-            for _ in range(n)
-        ]
+    GRID_SZ = 28            # must match draw_bg grid size
+    COLOR   = (60, 120, 220)  # soft blue-white
 
-    def update(self, dt):
-        for nd in self.nodes:
-            nd['x'] = (nd['x'] + nd['vx']*dt) % self.W
-            nd['y'] = (nd['y'] + nd['vy']*dt) % self.H
+    def __init__(self, W, H):
+        self.W, self.H = W, H
+        self.cols = max(1, W // self.GRID_SZ)
+        self.rows = max(1, H // self.GRID_SZ)
+        self.cx   = self.cols / 2.0
+        self.cy   = self.rows / 2.0
+        self.t    = 0.0
+        # Pre-create the shared tiny surface
+        self._surf = pygame.Surface((self.GRID_SZ - 2, self.GRID_SZ - 2), pygame.SRCALPHA)
+        # Pre-compute distances from center for every cell
+        self._dist = []
+        max_d = math.sqrt(self.cx**2 + self.cy**2) or 1.0
+        for gy in range(self.rows):
+            row = []
+            for gx in range(self.cols):
+                d = math.sqrt((gx - self.cx)**2 + (gy - self.cy)**2) / max_d
+                row.append(d)
+            self._dist.append(row)
+
+    def update(self, dt, t=0):
+        self.t += dt
 
     def draw(self, surf):
-        for nd in self.nodes:
-            x, y, r = int(nd['x']), int(nd['y']), int(nd['r'])
-            a = int(nd['a'])
-            # 3-layer soft blur: outer faint, inner darker
-            for i in range(3):
-                ri = max(1, int(r * (1 - i*0.25)))
-                ai = max(0, int(a * (0.5 + i*0.25)))
-                sf = pygame.Surface((ri*2, ri*2), pygame.SRCALPHA)
-                pygame.draw.circle(sf, (0, 0, 0, ai), (ri, ri), ri)
-                surf.blit(sf, (x-ri, y-ri))
+        gs  = self.GRID_SZ
+        s   = self._surf
+        t   = self.t
+        col = self.COLOR
+        for gy in range(self.rows):
+            drow = self._dist[gy]
+            for gx in range(self.cols):
+                d = drow[gx]
+                # Two overlapping sine waves for organic movement
+                v = (math.sin(d * 12.0 - t * 1.6) * 0.5
+                   + math.sin(d * 8.0 + t * 1.1 + gx * 0.15) * 0.3
+                   + math.sin(t * 0.7 + gy * 0.2) * 0.2)
+                # Remap to 0-1, then to alpha
+                v = max(0.0, (v + 1.0) * 0.5 - 0.30)   # threshold — slightly higher for brighter glow
+                a = int(v * 50)   # peak alpha ~50 → more visible
+                if a < 1:
+                    continue
+                px = gx * gs + 1
+                py = gy * gs + 1
+                s.fill((*col, a))
+                surf.blit(s, (px, py))
 
-# keep the old name as an alias so existing code doesn't break
-NeuralBG = FloatDots
+# backward-compat aliases
+FloatDots = PixelGrid
+NeuralBG  = PixelGrid
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -174,12 +194,12 @@ class Orbits:
     """
     #          rx   ry   speed  tilt  col   ring_a  planet_r
     _RINGS = [
-        (132, 46,  0.40,  0.18, BLUE,  50,  7),
-        (160, 58, -0.28, -0.12, PURP,  35,  6),
-        ( 96, 30,  0.65,  0.28, CYAN,  70,  5),
+        (72,  24,  0.35,  0.15, BLUE,  28,  4),
+        (88,  30, -0.25, -0.10, PURP,  22,  3),
+        (56,  18,  0.50,  0.22, CYAN,  35,  3),
     ]
-    TRAIL_STEPS = 18   # how many trail segments to draw
-    TRAIL_ARC   = 0.55 # radians of trail
+    TRAIL_STEPS = 12
+    TRAIL_ARC   = 0.40
 
     def __init__(self):
         self.angles = [0.0 for _ in self._RINGS]
@@ -198,9 +218,11 @@ class Orbits:
         y = cy + int(ex * math.sin(tilt) + ey * math.cos(tilt))
         return x, y
 
-    def draw(self, surf, cx, cy, glow_i=0.2):
-        for i, (rx, ry, spd, tilt, col, ring_a, pr) in enumerate(self._RINGS):
+    def draw(self, surf, cx, cy, glow_i=0.2, sf=1.0):
+        for i, (rx_base, ry_base, spd, tilt, col, ring_a, pr_base) in enumerate(self._RINGS):
             angle = self.angles[i]
+            rx = int(rx_base * sf);  ry = int(ry_base * sf)
+            pr = max(2, int(pr_base * sf))
 
             # -- Orbit ellipse (draw as many small line segments) --
             pts = []
@@ -325,7 +347,7 @@ class Pulses:
 
 # ═══════════════════════════════════════════════════════════════
 class ScanLine:
-    """Horizontal cyan scan line that sweeps the bot periodically."""
+    """Soft white glow that sweeps top-to-bottom over the bot."""
     def __init__(self):
         self.y = 0; self.active = False; self.timer = 5.0
 
@@ -334,75 +356,114 @@ class ScanLine:
         if self.timer > 6.5:
             self.active = True; self.y = top; self.timer = 0
         if self.active:
-            self.y += (bot - top) / 0.44 * dt
+            self.y += (bot - top) / 0.55 * dt
             if self.y > bot:
                 self.active = False
 
     def draw(self, surf, lx, rx):
         if not self.active: return
         y = int(self.y)
-        for dy in range(-4, 5):
-            a = max(0, int(105-abs(dy)*20))
+        w = rx - lx
+        # Soft white glow band (wider, softer than old cyan line)
+        for dy in range(-8, 9):
+            a = max(0, int(55 * (1.0 - abs(dy) / 8.0) ** 2))
             if a > 0:
-                s = pygame.Surface((rx-lx, 2), pygame.SRCALPHA)
-                s.fill((*CYAN, a))
-                surf.blit(s, (lx, y+dy))
+                s = pygame.Surface((w, 1), pygame.SRCALPHA)
+                s.fill((255, 255, 255, a))
+                surf.blit(s, (lx, y + dy))
 
 
 # ═══════════════════════════════════════════════════════════════
 class Waveform:
-    """Animated voice waveform — thin compressed bars, monospace style."""
-    BARS = 66
+    """Animated voice waveform — dynamically scales to container size."""
+    BAR_SPACING = 3   # px between bar centers
+
     def __init__(self, rect):
         self.rect = rect
-        self.h   = [0.03] * self.BARS
-        self.tgt = [0.03] * self.BARS
+        self._recompute()
+
+    def _recompute(self):
+        """Recalculate bar count from current rect width."""
+        self._bars = max(4, self.rect.w // self.BAR_SPACING)
+        self.h   = [0.03] * self._bars
+        self.tgt = [0.03] * self._bars
 
     def update(self, dt, active, t):
+        # If bar count doesn't match rect, rebuild
+        needed = max(4, self.rect.w // self.BAR_SPACING)
+        if needed != self._bars:
+            self._recompute()
         if active:
-            for i in range(self.BARS):
+            for i in range(self._bars):
                 self.tgt[i] = (abs(math.sin(t*3.5 + i*0.38))*0.55 +
                                abs(math.sin(t*7.1 + i*0.92))*0.35)
         else:
-            self.tgt = [0.04] * self.BARS
-        for i in range(self.BARS):
+            self.tgt = [0.04] * self._bars
+        for i in range(self._bars):
             self.h[i] += (self.tgt[i] - self.h[i]) * min(1.0, dt*10)
 
     def draw(self, surf, active):
         r   = self.rect
-        bw  = max(1, r.w // self.BARS)   # bar slot width (maybe 1 or 2 px)
-        col = CYAN if active else MUTED
-        for i, hv in enumerate(self.h):
+        n   = self._bars
+        # Distribute bars evenly across rect width
+        step = r.w / max(n, 1)
+        col  = CYAN if active else MUTED
+        for i in range(n):
+            hv = self.h[i]
             bh = max(2, int(hv * (r.h - 4)))
-            bx = r.x + i * bw
-            by = r.y + r.h//2 - bh//2
-            # 1-px thin line per bar — no gradient fill
-            pygame.draw.line(surf, col, (bx, by), (bx, by+bh), 1)
+            bx = int(r.x + i * step + step * 0.5)
+            by = r.y + r.h // 2 - bh // 2
+            pygame.draw.line(surf, col, (bx, by), (bx, by + bh), 1)
 
 
 # ═══════════════════════════════════════════════════════════════
 class ChatPanel:
-    """Animated glassmorphism chat bubble panel."""
-    MAX = 18
-    def __init__(self, rect):
+    """Animated glassmorphism chat bubble panel — all sizes scale with sf."""
+    MAX = 22
+    TEXT_WHITE = (248, 250, 255)
+
+    def __init__(self, rect, sf=1.0):
         self.rect = rect
-        self.msgs = []   # {role, lines, anim}
+        self.sf   = sf
+        self.msgs = []
         self.typing = False
         self.type_t = 0.0
-        self._fonts = None   # set after pygame.init
+        self._fonts = None
+
+    def resize(self, new_rect, new_sf):
+        """Update rect and scale factor, preserving messages."""
+        self.rect = new_rect
+        self.sf   = new_sf
+        self._fonts = None   # force font rebuild
+        # Re-wrap all existing messages for new width
+        fm = self._get_fonts()['msg']
+        max_w = self.rect.w - int(70 * self.sf)
+        for m in self.msgs:
+            raw_text = ' '.join(m['lines'])
+            words = raw_text.split()
+            lines, cur = [], []
+            for w in words:
+                test = ' '.join(cur + [w])
+                if fm.size(test)[0] > max_w:
+                    lines.append(' '.join(cur)); cur = [w]
+                else:
+                    cur.append(w)
+            if cur: lines.append(' '.join(cur))
+            m['lines'] = lines or ['']
 
     def _get_fonts(self):
         if self._fonts is None:
+            s = self.sf
             self._fonts = {
-                'title':  sysfont(13),
-                'msg':    sysfont(15),
-                'label':  sysfont(12, bold=True),
+                'title':  sysfont(max(8, int(15 * s)), bold=True),
+                'msg':    sysfont(max(6, int(12 * s))),
+                'label':  sysfont(max(5, int(10 * s)), bold=True),
             }
         return self._fonts
 
     def add(self, role, text):
         fm = self._get_fonts()['msg']
-        max_w = self.rect.w - 90
+        max_w = self.rect.w - int(70 * self.sf)
         words = text.replace('\n', ' ').split()
         lines, cur = [], []
         for w in words:
@@ -423,58 +484,64 @@ class ChatPanel:
             m['anim'] = min(1.0, m['anim'] + dt * 5)
 
     def draw(self, surf):
-        fonts  = self._get_fonts()
+        fonts = self._get_fonts()
         fm, fl, ft = fonts['msg'], fonts['label'], fonts['title']
-        r = self.rect
-        glass_panel(surf, r, BLUE, radius=18, bga=22, ba=90)
+        r  = self.rect
+        s  = self.sf
+        rd = max(6, int(18 * s))
+        glass_panel(surf, r, BLUE, radius=rd, bga=16, ba=70)
 
         # Panel title
-        ts = ft.render("C O N V E R S A T I O N", True, MUTED)
-        surf.blit(ts, (r.x + 16, r.y + 10))
-        # Separator
-        pygame.draw.line(surf, (*MUTED, 60), (r.x+12, r.y+26), (r.right-12, r.y+26))
+        p16 = max(4, int(16 * s));  p12 = max(4, int(12 * s))
+        ts = ft.render("C O N V E R S A T I O N", True, (140, 150, 180))
+        surf.blit(ts, (r.x + p16, r.y + p12))
+        sep_y = r.y + p12 + ts.get_height() + max(2, int(4*s))
+        pygame.draw.line(surf, (60, 70, 100, 40), (r.x + int(14*s), sep_y), (r.right - int(14*s), sep_y))
 
-        lh  = fm.get_height() + 5
-        pad = 10
-        y   = r.bottom - pad - (32 if self.typing else 6)
+        lh  = fm.get_height() + max(2, int(4 * s))
+        pad = max(6, int(14 * s))
+        y   = r.bottom - pad - (int(30*s) if self.typing else int(8*s))
 
+        br = max(4, int(12 * s))
         for m in reversed(self.msgs):
             a       = ease_out(m['anim'])
             is_user = (m['role'] == 'user')
             bub_col = BLUE if is_user else PURP
-            bub_w   = min(r.w - 80,
-                          max(80, max((fm.size(ln)[0] for ln in m['lines']), default=40) + 28))
-            bub_h   = len(m['lines']) * lh + 20
-            bub_x   = (r.right - bub_w - 12) if is_user else (r.x + 12)
-            slide   = int((1-a) * 55 * (1 if is_user else -1))
+            bub_w   = min(r.w - int(56*s),
+                          max(int(70*s), max((fm.size(ln)[0] for ln in m['lines']), default=30) + int(32*s)))
+            bub_h   = len(m['lines']) * lh + int(24 * s)
+            bub_x   = (r.right - bub_w - int(16*s)) if is_user else (r.x + int(16*s))
+            slide   = int((1-a) * 40 * s * (1 if is_user else -1))
             bx, by  = bub_x + slide, int(y - bub_h)
 
             # Bubble background
             bs = pygame.Surface((bub_w, bub_h), pygame.SRCALPHA)
             grad_h(bs, pygame.Rect(0,0,bub_w,bub_h),
-                   lerp3(bub_col,(0,0,0),0.55), lerp3(bub_col,(8,8,20),0.65), r=14)
-            pygame.draw.rect(bs, (*bub_col, int(145*a)), (0,0,bub_w,bub_h), 2, border_radius=14)
+                   lerp3(bub_col,(0,0,0),0.55), lerp3(bub_col,(8,8,20),0.65), r=br)
+            pygame.draw.rect(bs, (*bub_col, int(120*a)), (0,0,bub_w,bub_h), 1, border_radius=br)
             bs.set_alpha(int(255*a))
             surf.blit(bs, (bx, by))
 
             # Role label
             lbl = fl.render("YOU" if is_user else "BOT", True, bub_col)
-            surf.blit(lbl, (bx + (bub_w - lbl.get_width() - 8 if is_user else 8), by + 4))
+            lbl_pad = max(4, int(10*s))
+            surf.blit(lbl, (bx + (bub_w - lbl.get_width() - lbl_pad if is_user else lbl_pad), by + max(2,int(5*s))))
 
             # Message text
             for li, ln in enumerate(m['lines']):
-                txt = fm.render(ln, True, WHITE)
-                surf.blit(txt, (bx + 12, by + lh*li + 14))
+                txt = fm.render(ln, True, self.TEXT_WHITE)
+                surf.blit(txt, (bx + max(4,int(12*s)), by + lh*li + max(6,int(16*s))))
 
-            y = by - 8
-            if y < r.y + 30:
+            y = by - max(6, int(12 * s))
+            if y < sep_y + int(8*s):
                 break
 
-        # Typing indicator (three bouncing dots)
+        # Typing indicator
         if self.typing:
-            ty = r.bottom - pad - 14
+            ty = r.bottom - pad - max(6,int(14*s))
+            dot_sp = max(8, int(14*s))
             for i in range(3):
                 phase = self.type_t * 4 + i * 1.1
                 rv = 0.4 + 0.6 * abs(math.sin(phase))
                 rc = lerp3(MUTED, CYAN, rv)
-                pygame.draw.circle(surf, rc, (r.x + 22 + i*16, ty), int(3 + 2*rv))
+                pygame.draw.circle(surf, rc, (r.x + int(22*s) + i*dot_sp, ty), max(1,int((2 + 2*rv)*s)))

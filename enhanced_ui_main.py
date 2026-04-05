@@ -13,11 +13,14 @@ WIN_W,  WIN_H  = 1280, 720
 FPS = 60
 
 # ── Palette ────────────────────────────────────────────────────────
-BG    = (8,   10,  22);  BG2   = (12,  15,  32)
+BG    = (4,   5,  12);   BG2   = (6,   8,  18)
 BLUE  = (74,  158, 255); PURP  = (180,  78, 255)
 CYAN  = (45,  210, 255); GREEN = (80,  220, 140)
 ORANGE= (255, 165,  60); RED   = (255,  80,  80)
-WHITE = (255, 255, 255); MUTED = (70,   80, 125)
+WHITE = (248, 250, 255); MUTED = (70,   80, 125)
+
+# Fixed 16:9 aspect ratio
+ASPECT_RATIO = WIN_W / WIN_H   # 1280/720 = 16:9
 
 # Bot palette
 HL, HR = (68, 85, 200), (92, 60, 192)
@@ -39,12 +42,22 @@ CHAT   = "CHAT"   # AI Q&A mode
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Scale factor — everything sizes relative to this
+# ═══════════════════════════════════════════════════════════════════
+def get_scale(W, H):
+    """Return a scale factor relative to the base 1280×720 design."""
+    return min(W / WIN_W, H / WIN_H)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Pixel cloud builder
 # ═══════════════════════════════════════════════════════════════════
-def _build_cloud(cx, cy):
+def _build_cloud(cx, cy, sf=1.0):
+    """Pixel cloud that scales with the window."""
+    SC = 0.70 * sf
     rng = random.Random(2024)
     items = []
-    ox, oy = cx + 95, cy - 85
+    ox, oy = cx + int(95*SC), cy - int(85*SC)
     columns = [
         (  8, [-16,-34,-53,-72,-92,-112,-132], 15, 0),
         ( -8, [-18,-38,-58,-78,-98,-118],      14, 0),
@@ -58,35 +71,35 @@ def _build_cloud(cx, cy):
     ]
     for dx, dy_list, sz, ci in columns:
         for dy in dy_list:
-            items.append({'bx':ox+dx+rng.uniform(-2,2),
-                          'by':oy+dy+rng.uniform(-2,2),
-                          'x':0,'y':0,'sz':sz,'sq':True,
+            items.append({'bx':ox+int(dx*SC)+rng.uniform(-2,2),
+                          'by':oy+int(dy*SC)+rng.uniform(-2,2),
+                          'x':0,'y':0,'sz':max(1,int(sz*SC)),'sq':True,
                           'col':CLOUD_COL[ci],'ba':232,
                           'ph':rng.uniform(0,6.28),'sp':rng.uniform(.2,.7),'ca':232})
-    for _ in range(95):
-        dx = rng.uniform(-40,-240); dy = rng.uniform(-40,-170)
-        dist = math.sqrt(dx*dx+dy*dy); norm = min(dist/200,1.0)
-        sz = max(1,int((1-norm)*8+1)); sq = sz>=5; ci = min(int(norm*6)+3,8)
-        items.append({'bx':ox+dx,'by':oy+dy,'x':0,'y':0,'sz':sz,'sq':sq,
-                      'col':CLOUD_COL[ci],'ba':max(70,int(210*(1-norm*.55))),
+    for _ in range(65):
+        dx = rng.uniform(-30,-170)*sf; dy = rng.uniform(-30,-120)*sf
+        dist = math.sqrt(dx*dx+dy*dy); norm = min(dist/(150*sf),1.0)
+        sz = max(1,int((1-norm)*6*sf+1)); sq = sz>=4; ci = min(int(norm*6)+3,8)
+        items.append({'bx':ox+int(dx),'by':oy+int(dy),'x':0,'y':0,'sz':sz,'sq':sq,
+                      'col':CLOUD_COL[ci],'ba':max(60,int(180*(1-norm*.55))),
                       'ph':rng.uniform(0,6.28),'sp':rng.uniform(.1,.5),'ca':100})
     return items
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Bot renderer
+#  Bot renderer — all dimensions scale with sf
 # ═══════════════════════════════════════════════════════════════════
 class MLClubBot:
-    HW, HH = 95, 85
-    HR_  = 14
-    EW, EH, ER_ = 24, 92, 9
-    VW, VH, VR  = 152, 68, 28
-    EYEW, EYEGAP, EYEYR = 36, 28, -10
-    # Antennas: emerge from mid-upper EAR panels, angle outward+up (matches image)
-    ANT_LB = (-108, -38)  # left base  – on left ear, upper-mid
-    ANT_LT = (-165, -110) # left tip   – upper-left
-    ANT_RB = ( 108, -40)  # right base – on right ear, upper-mid
-    ANT_RT = ( 148, -108) # right tip  – upper-right
+    # Base dimensions at 1280×720 (scale factor = 1.0)
+    _BASE_HW, _BASE_HH = 66, 59
+    _BASE_HR  = 10
+    _BASE_EW, _BASE_EH, _BASE_ER = 17, 64, 6
+    _BASE_VW, _BASE_VH, _BASE_VR = 106, 48, 20
+    _BASE_EYEW, _BASE_EYEGAP, _BASE_EYEYR = 25, 20, -7
+    _BASE_ANT_LB = (-75, -27)
+    _BASE_ANT_LT = (-116, -77)
+    _BASE_ANT_RB = ( 75, -28)
+    _BASE_ANT_RT = ( 104, -76)
 
     # Expression states
     EXPR_IDLE     = 0
@@ -94,21 +107,44 @@ class MLClubBot:
     EXPR_THINKING = 2
     EXPR_LISTENING= 3
 
-    def __init__(self, screen, cx, cy):
+    def __init__(self, screen, cx, cy, sf=1.0):
         self.screen = screen
         self.cx, self.cy = cx, cy
+        self.sf = sf
+        self._apply_scale(sf)
         self.t = 0.0; self.float_y = 0.0
         self.blink_t = 0.0; self.blinking = False
         self.mouth_open = 0.0; self.speaking = False
         self.glow_v = 0.1
         self.expr = self.EXPR_IDLE
-        self.expr_t = 0.0       # timer for expression transitions
-        self.think_wave = 0.0   # thinking mouth wave
-        self.cloud = _build_cloud(cx, cy)
+        self.expr_t = 0.0
+        self.think_wave = 0.0
+        self.cloud = _build_cloud(cx, cy, sf)
+
+    def _apply_scale(self, sf):
+        """Recompute all pixel dimensions from the base values."""
+        self.sf = sf
+        s = sf
+        self.HW  = int(self._BASE_HW * s)
+        self.HH  = int(self._BASE_HH * s)
+        self.HR_ = max(2, int(self._BASE_HR * s))
+        self.EW  = max(2, int(self._BASE_EW * s))
+        self.EH  = max(4, int(self._BASE_EH * s))
+        self.ER_ = max(1, int(self._BASE_ER * s))
+        self.VW  = max(8, int(self._BASE_VW * s))
+        self.VH  = max(6, int(self._BASE_VH * s))
+        self.VR  = max(4, int(self._BASE_VR * s))
+        self.EYEW    = max(4, int(self._BASE_EYEW * s))
+        self.EYEGAP  = max(2, int(self._BASE_EYEGAP * s))
+        self.EYEYR   = int(self._BASE_EYEYR * s)
+        self.ANT_LB  = (int(self._BASE_ANT_LB[0]*s), int(self._BASE_ANT_LB[1]*s))
+        self.ANT_LT  = (int(self._BASE_ANT_LT[0]*s), int(self._BASE_ANT_LT[1]*s))
+        self.ANT_RB  = (int(self._BASE_ANT_RB[0]*s), int(self._BASE_ANT_RB[1]*s))
+        self.ANT_RT  = (int(self._BASE_ANT_RT[0]*s), int(self._BASE_ANT_RT[1]*s))
 
     def update(self, dt, voice_on, speaking, state=None):
         self.t += dt; self.speaking = speaking
-        self.float_y = math.sin(self.t*1.4)*7 + math.sin(self.t*2.8)*2.5
+        self.float_y = (math.sin(self.t*1.4)*7 + math.sin(self.t*2.8)*2.5) * self.sf
         self.expr_t += dt
         self.think_wave = math.sin(self.t * 6)
 
@@ -152,8 +188,8 @@ class MLClubBot:
 
     # ── flat/SVG helpers ─────────────────────────────────────────────
     @staticmethod
-    def _frect(surf, rect, fill, border=None, br=8):
-        """Flat filled rect with optional 1-px border."""
+    def _frect(surf, rect, fill, border=None, br=12):
+        """Flat filled rect with smooth rounded corners, optional 1-px border."""
         pygame.draw.rect(surf, fill, rect, border_radius=br)
         if border:
             pygame.draw.rect(surf, border, rect, 1, border_radius=br)
@@ -194,23 +230,27 @@ class MLClubBot:
         cx = self.cx;  cy = int(self.cy + self.float_y)
         HW, HH = self.HW, self.HH
         expr = self.expr
+        sc = self.sf
 
-        # ── Shoulders ────────────────────────────────────────────────
-        sht = cy+HH+20;  shb = cy+HH+42;  sw = 112
-        lpts = [(cx-14,sht),(cx-sw,sht),(cx-sw+8,shb),(cx-28,shb)]
-        rpts = [(cx+14,sht),(cx+sw,sht),(cx+sw-8,shb),(cx+28,shb)]
+        # ── Shoulders (scaled) ──────────────────────────────────────────────
+        sht = cy+HH+int(14*sc);  shb = cy+HH+int(30*sc);  sw = int(78*sc)
+        lpts = [(cx-int(10*sc),sht),(cx-sw,sht),(cx-sw+int(6*sc),shb),(cx-int(20*sc),shb)]
+        rpts = [(cx+int(10*sc),sht),(cx+sw,sht),(cx+sw-int(6*sc),shb),(cx+int(20*sc),shb)]
         self._fpoly(s, lpts, C_SHLDR, C_SHLDR_B)
         self._fpoly(s, rpts, C_SHLDR, C_SHLDR_B)
 
         # V-collar
-        collar = [(cx-38,sht),(cx+38,sht),(cx+22,sht+18),(cx,sht+30),(cx-22,sht+18)]
+        c27=int(27*sc); c15=int(15*sc); c13=int(13*sc); c21=int(21*sc)
+        collar = [(cx-c27,sht),(cx+c27,sht),(cx+c15,sht+c13),(cx,sht+c21),(cx-c15,sht+c13)]
         self._fpoly(s, collar, C_COLLAR, lerp3(C_COLLAR,WHITE,0.3))
 
-        # ── Neck ─────────────────────────────────────────────────────
-        nr = pygame.Rect(cx-26, cy+HH, 52, 20)
-        self._frect(s, nr, C_NECK, br=3)
+        # ── Neck (scaled) ─────────────────────────────────────────────────
+        nw2=int(18*sc); nh=int(14*sc)
+        nr = pygame.Rect(cx-nw2, cy+HH, nw2*2, nh)
+        self._frect(s, nr, C_NECK, br=max(1,int(3*sc)))
+        nlw=int(12*sc)
         for i in range(2):
-            pygame.draw.line(s,(30,36,100),(cx-18,cy+HH+5+i*7),(cx+18,cy+HH+5+i*7),1)
+            pygame.draw.line(s,(30,36,100),(cx-nlw,cy+HH+int(3*sc)+int(i*5*sc)),(cx+nlw,cy+HH+int(3*sc)+int(i*5*sc)),1) # neck
 
         # ── Ears ─────────────────────────────────────────────────────
         for sgn in (-1, 1):
@@ -257,7 +297,7 @@ class MLClubBot:
                                  pygame.Rect(er2.x+3, ey+2, 9, 6), border_radius=2)
 
         elif expr == self.EXPR_LISTENING:
-            ey_off = int(-4*abs(math.sin(self.t*1.5)))
+            ey_off = int(-4*self.sf*abs(math.sin(self.t*1.5)))
             for ex, col in [(cx-off,C_EYE_L),(cx+off,C_EYE_R)]:
                 er2 = pygame.Rect(ex-h, ey-h+ey_off, self.EYEW, self.EYEW)
                 self._frect(s, er2, col, br=5)
@@ -302,9 +342,9 @@ class MLClubBot:
                                (self.ANT_RB,self.ANT_RT,C_WIRE_R)]:
             bx, by = cx+base[0], cy+base[1]
             tx, ty = cx+tip[0],  cy+tip[1]
-            pygame.draw.line(s, col, (bx,by),(tx,ty), 2)   # thinner wire
-            glow_c(s, tx, ty, 7, col, self.glow_v)          # tip glow
-            glow_c(s, bx, by, 4, col, self.glow_v*.5)       # base dot
+            pygame.draw.line(s, col, (bx,by),(tx,ty), max(1,int(2*sc)))   # thinner wire
+            glow_c(s, tx, ty, max(2,int(7*sc)), col, self.glow_v)        # tip glow
+            glow_c(s, bx, by, max(1,int(4*sc)), col, self.glow_v*.5)     # base dot
 
 
 
@@ -532,13 +572,15 @@ class ScriptPlayer:
 #  Layout  (recalculated on fullscreen toggle)
 # ═══════════════════════════════════════════════════════════════════
 def make_layout(W, H):
-    M = 12
+    sf = get_scale(W, H)
+    M = max(6, int(14 * sf))
     LP = int(W * 0.42)
     left  = pygame.Rect(M, M, LP - M*2, H - M*2)
     right = pygame.Rect(LP, M, W - LP - M, H - M*2)
     bcx   = left.centerx
-    bcy   = left.centery + 25
-    wave  = pygame.Rect(left.x+10, left.bottom-54, left.w-20, 44)
+    bcy   = left.centery + int(18 * sf)
+    wh    = max(16, int(38 * sf))
+    wave  = pygame.Rect(left.x + int(10*sf), left.bottom - wh - int(10*sf), left.w - int(20*sf), wh)
     return left, right, bcx, bcy, wave
 
 
@@ -546,109 +588,58 @@ def make_layout(W, H):
 #  Draw backgrounds
 # ═══════════════════════════════════════════════════════════════════
 def draw_bg(screen, W, H):
+    """Dark gradient background — clean, no grid lines."""
     for i in range(H):
         t = i/H
-        c = lerp3((8,10,22),(12,15,32),t)
+        c = lerp3((4,5,12),(6,8,18),t)
         pygame.draw.line(screen,c,(0,i),(W,i))
-    gs = 28                           # tighter grid
-    for x in range(0,W,gs):
-        a=int(10*(1-abs(x-W/2)/(W/2+1)))
-        pygame.draw.line(screen,(*((18,22,40)),a),(x,0),(x,H))
-    for y in range(0,H,gs):
-        a=int(10*(1-abs(y-H/2)/(H/2+1)))
-        pygame.draw.line(screen,(*((18,22,40)),a),(0,y),(W,y))
+
+
+
+# (HUD badges removed)
 
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  HUD
-# ═══════════════════════════════════════════════════════════════════
-def draw_hud(screen, state, voice_on, ol_status, fonts):
-    fM,fS,fXS = fonts
-    W = screen.get_width()
-
-    # Ollama badge top-right (only in chat mode, others don't need it prominently)
-    bc  = {"OK":GREEN,"OFFLINE":RED}.get(ol_status,ORANGE)
-    bl  = {"OK":"● Online","OFFLINE":"● Offline"}.get(ol_status,"● Connecting")
-    bs  = fXS.render(f"Ollama {bl}",True,bc)
-    bx  = W - bs.get_width() - 24
-    br  = pygame.Rect(bx-8,12,bs.get_width()+16,26)
-    glass_panel(screen,br,bc,radius=12,bga=20,ba=90)
-    screen.blit(bs,(bx,18))
-
-    # State badge top-left  —  friendly human-readable labels, no tech words
-    STATE_LABEL = {
-        IDLE:   ("⏸",   "Ready",          MUTED),
-        ACT1:   ("🎙",   "Opening",         BLUE),
-        ACT2:   ("👥",   "Invitation",      PURP),
-        ACT3:   ("🎤",   "Request",         ORANGE),
-        ACT4:   ("⏳",   "Countdown",       RED),
-        POSTER: ("🎨",   "Poster Reveal",   PURP),
-        CHAT:   ("💬",   "AI Chat",         GREEN),
-    }
-    icon, label, sc = STATE_LABEL.get(state, (".",state,WHITE))
-    stxt = fS.render(f"{icon}  {label}", True, sc)
-    sr   = pygame.Rect(12,12,stxt.get_width()+24,28)
-    glass_panel(screen,sr,sc,radius=12,bga=20,ba=90)
-    screen.blit(stxt,(24,18))
-
-    # Hint line below state badge
-    HINTS = {
-        IDLE:   "Press SPACE to start",
-        ACT1:   "SPACE → next when done",
-        ACT2:   "SPACE → next when done",
-        ACT3:   "SPACE → next when done",
-        ACT4:   "P → reveal the poster!",
-        POSTER: "C → enter AI chat",
-        CHAT:   "🎤 VOICE ON" if voice_on else "🔇 VOICE OFF",
-    }
-    hint_col = GREEN if (state==CHAT and voice_on) else MUTED
-    hi = fXS.render(HINTS.get(state,""), True, hint_col)
-    hr2 = pygame.Rect(12,44,hi.get_width()+24,22)
-    glass_panel(screen,hr2,hint_col,radius=10,bga=12,ba=65)
-    screen.blit(hi,(24,50))
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  Poster screen
+#  Poster screen — JetBrains Mono, minimal modern design
 # ═══════════════════════════════════════════════════════════════════
 def draw_poster(screen, t, confetti=None, flash_t=0.0):
-    W,H = screen.get_size()
-    # Background
+    W, H = screen.get_size()
+    sf = min(W / 1280, H / 720)
+
+    # Dark gradient background
     for i in range(H):
-        p=i/H; pygame.draw.line(screen,lerp3((12,15,40),(60,50,120),p),(0,i),(W,i))
+        p = i / H
+        pygame.draw.line(screen, lerp3((6, 8, 18), (12, 14, 28), p), (0, i), (W, i))
 
-    # Animated glow burst behind the text (expands from center)
-    burst_r = min(int(flash_t * 400), int(min(W,H)*0.6))
-    if burst_r > 0:
-        gv = abs(math.sin(t*2.2))
+    # Subtle centre glow (single soft circle)
+    glow_r = int(min(W, H) * 0.35)
+    if glow_r > 0:
+        gv = abs(math.sin(t * 1.2))
         gc = lerp3(BLUE, PURP, gv)
-        for ring in range(4):
-            ra = max(0, int(60*(1 - ring/4) * max(0, 1-flash_t*0.4)))
-            if ra > 0:
-                s = pygame.Surface((burst_r*2, burst_r*2), pygame.SRCALPHA)
-                pygame.draw.circle(s, (*gc, ra), (burst_r, burst_r), burst_r - ring*20)
-                screen.blit(s, (W//2 - burst_r, H//2 - burst_r))
+        gs = pygame.Surface((glow_r*2, glow_r*2), pygame.SRCALPHA)
+        pygame.draw.circle(gs, (*gc, int(18 + 8*gv)), (glow_r, glow_r), glow_r)
+        screen.blit(gs, (W//2 - glow_r, H//2 - glow_r))
 
-    gv = abs(math.sin(t*2.2))
-    gc = lerp3(BLUE,PURP,gv)
-    # Text with scale-in effect for first second
+    # Text with scale-in effect
     scale = min(1.0, flash_t * 1.8)
-    for txt,col,sz,y in [
-        ("🤖  ML Club AI Bot",gc, 80, H//2-130),
-        ("Powered by Ollama + Local LLM",WHITE,52,H//2-40),
-        ("✨ Voice · TTS · Smart Responses",GREEN,40,H//2+60),
-        ("Welcome to the ML Club!",PURP,38,H//2+140),
-    ]:
-        eff_sz = max(8, int(sz * scale))
-        f=pygame.font.Font(None,eff_sz); surf=f.render(txt,True,col)
-        screen.blit(surf,surf.get_rect(center=(W//2,y)))
+    lines = [
+        ("ML Club AI Bot",    BLUE,   max(10, int(42 * sf * scale)), H//2 - int(80*sf)),
+        ("Powered by Ollama + Local LLM", WHITE, max(8, int(22 * sf * scale)), H//2 - int(20*sf)),
+        ("──────────",        MUTED,  max(6, int(14 * sf * scale)), H//2 + int(15*sf)),
+        ("Voice · TTS · Smart Responses", GREEN, max(7, int(18 * sf * scale)), H//2 + int(50*sf)),
+        ("Welcome to the ML Club!",       PURP,  max(7, int(16 * sf * scale)), H//2 + int(90*sf)),
+    ]
+    for txt, col, sz, y in lines:
+        f = jbmono(sz)
+        surf = f.render(txt, True, col)
+        screen.blit(surf, surf.get_rect(center=(W//2, y)))
 
-    # Confetti shower
+    # Confetti
     if confetti:
         confetti.draw(screen)
 
-    # White flash overlay (fades in first 0.5s)
+    # White flash overlay
     flash_a = max(0, int(255 * (1 - flash_t * 2.0)))
     if flash_a > 0:
         fl = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -667,28 +658,40 @@ def main():
     is_fs    = False
     W, H     = WIN_W, WIN_H
     screen   = pygame.display.set_mode((W,H), pygame.RESIZABLE)
+
+    def clamp_aspect(w, h):
+        """Enforce fixed 16:9 aspect ratio."""
+        target_h = int(w / ASPECT_RATIO)
+        if target_h <= h:
+            return w, target_h
+        else:
+            return int(h * ASPECT_RATIO), h
     pygame.display.set_caption("🤖 ML Club AI Bot")
     clock    = pygame.time.Clock()
+    sf       = get_scale(W, H)
 
-    # Fonts — JetBrains Mono loaded from project directory
-    fL  = jbmono(22, bold=True)
-    fM  = jbmono(18)
-    fS  = jbmono(15)
-    fXS = jbmono(13)
-    fonts_hud = (fM, fS, fXS)
+    # Fonts — scaled to window size
+    def make_fonts(sf):
+        return (
+            jbmono(max(8, int(20 * sf)), bold=True),   # fL
+            jbmono(max(6, int(15 * sf))),               # fM
+            jbmono(max(5, int(13 * sf))),               # fS
+            jbmono(max(5, int(11 * sf))),               # fXS
+        )
+    fL, fM, fS, fXS = make_fonts(sf)
 
     # Build layout
     left, right, bcx, bcy, wave_rect = make_layout(W, H)
 
     # Systems
     aurora   = Aurora(W, H)
-    neural   = FloatDots(W, H)   # dark blurred drifting circles
+    neural   = FloatDots(W, H)   # pixelated grid shimmer effect
     orbits   = Orbits()
     pulses   = Pulses()
     scanline = ScanLine()
     waveform = Waveform(wave_rect)
-    chat     = ChatPanel(right)
-    bot      = MLClubBot(screen, bcx, bcy)
+    chat     = ChatPanel(right, sf)
+    bot      = MLClubBot(screen, bcx, bcy, sf)
     audio    = AudioSystem()
     voice    = RobustVoiceInput()
     ollama   = OllamaClient()
@@ -722,12 +725,16 @@ def main():
     print("[System] ML Club Bot ready – SPACE to begin.")
 
     def rebuild(new_w, new_h):
-        nonlocal left, right, bcx, bcy, wave_rect, waveform, chat, bot, aurora, neural, confetti
+        nonlocal left, right, bcx, bcy, wave_rect, waveform, bot, aurora, neural, confetti, sf, fL, fM, fS, fXS
+        sf = get_scale(new_w, new_h)
+        fL, fM, fS, fXS = make_fonts(sf)
         left, right, bcx, bcy, wave_rect = make_layout(new_w, new_h)
         waveform = Waveform(wave_rect)
-        chat.rect = right
+        # Update chat panel — preserve existing messages
+        chat.resize(right, sf)
         bot.cx = bcx; bot.cy = bcy
-        bot.cloud = _build_cloud(bcx, bcy)
+        bot._apply_scale(sf)
+        bot.cloud = _build_cloud(bcx, bcy, sf)
         aurora = Aurora(new_w, new_h)
         neural = NeuralBG(new_w, new_h)
         confetti = Confetti(new_w, new_h)
@@ -752,7 +759,7 @@ def main():
                 elif k == pygame.K_f:
                     is_fs = not is_fs
                     if is_fs:
-                        W,H = FULL_W,FULL_H
+                        W,H = clamp_aspect(FULL_W, FULL_H)
                         screen = pygame.display.set_mode((W,H), pygame.FULLSCREEN)
                     else:
                         W,H = WIN_W,WIN_H
@@ -783,7 +790,7 @@ def main():
                     state=IDLE; voice_on=False
                     voice.stop_listening(); script.stop()
             elif event.type == pygame.VIDEORESIZE and not is_fs:
-                W,H = event.w, event.h
+                W,H = clamp_aspect(event.w, event.h)
                 screen = pygame.display.set_mode((W,H), pygame.RESIZABLE)
                 rebuild(W,H); bot.screen = screen
 
@@ -802,7 +809,7 @@ def main():
         neural.update(dt)
         orbits.update(dt)
         pulses.update(dt)
-        scanline.update(dt, bcy - 85, bcy + 85)
+        scanline.update(dt, bcy - bot.HH, bcy + bot.HH)
         waveform.update(dt, voice_on or speaking, gt)
         chat.update(dt, ollama.thinking)
         if state == POSTER:
@@ -812,16 +819,15 @@ def main():
         # ── DRAW ────────────────────────────────────────────────────
         screen.fill(BG)
         draw_bg(screen, W, H)
-        aurora.draw(screen)
 
-        # Neural network (only in background area – both panels)
+        # Pixelated grid shimmer effect
         neural.draw(screen)
 
         # Left panel glass
-        glass_panel(screen, left, BLUE, radius=20, bga=18, ba=80)
+        glass_panel(screen, left, BLUE, radius=max(6,int(20*sf)), bga=18, ba=80)
 
         # Orbit rings (behind bot)
-        orbits.draw(screen, bcx, int(bcy+bot.float_y), bot.glow_v)
+        orbits.draw(screen, bcx, int(bcy+bot.float_y), bot.glow_v, sf)
 
         # Pulse rings
         pulses.draw(screen)
@@ -832,43 +838,24 @@ def main():
         # Bot character
         bot.draw()
 
-        # Scan line over bot
+        # White glow sweep over bot
         scanline.draw(screen, left.x+8, left.right-8)
 
         # Bot panel label
-        lbl = fXS.render("ML CLUB AI BOT", True, (*MUTED, 200))
-        screen.blit(lbl, (left.centerx - lbl.get_width()//2, left.y + 8))
+        lbl = fM.render("ML CLUB AI BOT", True, (*MUTED, 200))
+        screen.blit(lbl, (left.centerx - lbl.get_width()//2, left.y + max(4,int(10*sf))))
 
         # Waveform
         glass_panel(screen, wave_rect, CYAN if (voice_on or speaking) else MUTED,
-                    radius=10, bga=15, ba=70)
+                    radius=max(4,int(10*sf)), bga=15, ba=70)
         waveform.draw(screen, voice_on or speaking)
 
-        # State hints in bot panel
-        ACT_STATES = (ACT1, ACT2, ACT3, ACT4)
-        if state == IDLE:
-            hint = fS.render("Press SPACE to begin", True, MUTED)
-            screen.blit(hint, (left.centerx - hint.get_width()//2, left.bottom - wave_rect.h - 30))
-        elif state in ACT_STATES and not script.is_complete():
-            dot  = int(gt * 3) % 4
-            hint = fS.render("Speaking" + "." * dot, True, lerp3(MUTED, CYAN, abs(math.sin(gt*2))))
-            screen.blit(hint, (left.centerx - hint.get_width()//2, left.bottom - wave_rect.h - 30))
-        elif state in (ACT1, ACT2, ACT3) and script.is_complete():
-            hint = fS.render("Press SPACE for next", True, lerp3(MUTED, GREEN, abs(math.sin(gt*2))))
-            screen.blit(hint, (left.centerx - hint.get_width()//2, left.bottom - wave_rect.h - 30))
-        elif state == ACT4 and script.is_complete():
-            pulse = abs(math.sin(gt * 3))
-            hint = fS.render("🎨 Press P to reveal!", True, lerp3(ORANGE, WHITE, pulse))
-            screen.blit(hint, (left.centerx - hint.get_width()//2, left.bottom - wave_rect.h - 30))
 
         # Right panel: chat or POSTER
         if state == POSTER:
             draw_poster(screen, gt, confetti, poster_flash)
         else:
             chat.draw(screen)
-
-        # HUD overlays
-        draw_hud(screen, state, voice_on, ollama.status, fonts_hud)
 
         pygame.display.flip()
 
